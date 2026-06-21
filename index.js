@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -39,8 +39,6 @@ app.get("/", (req, res) => {
   res.json({ message: "Welcome to Resell Dokan Server!" });
 });
 
-
-
 // get all products
 app.get("/api/products", async (req, res) => {
   try {
@@ -57,14 +55,38 @@ app.get("/api/products", async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching products:", error);
-    res.status(500).json({ 
-      success: false, 
-      message: "Failed to fetch products", 
-      error: error.message 
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch products",
+      error: error.message,
     });
   }
 });
 
+// get the specific item
+app.get("/api/products/:id", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const productsCollection = db.collection("products");
+
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid product id" });
+    }
+
+    const product = await productsCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+
+    res.status(200).json({ success: true, data: product });
+  } catch (err) {
+    console.error("Failed to fetch product:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 // post or upload products
 app.post("/api/product/add", async (req, res) => {
@@ -85,6 +107,11 @@ app.post("/api/product/add", async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+
+
+
+
 
 // Start server
 app.listen(PORT, () => {
