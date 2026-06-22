@@ -109,8 +109,97 @@ app.post("/api/product/add", async (req, res) => {
 });
 
 
+// update the target product
+app.patch("/api/products/edit/:id", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const productsCollection = db.collection("products");
+
+    const { id } = req.params;
+    const updates = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid product id" });
+    }
+
+    // Never let the client overwrite these fields directly
+    delete updates._id;
+    delete updates.seller_info;
+
+    const result = await productsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updates }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+
+    res.status(200).json({ success: true, message: "Product updated" });
+  } catch (err) {
+    console.error("Failed to update product:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 
+
+// order routes
+
+app.post("/api/orders", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const ordersCollection = db.collection("orders");
+    const productsCollection = db.collection("products");
+
+    const { buyerInfo, productId, quantity } = req.body;
+
+    if (!ObjectId.isValid(productId)) {
+      return res.status(400).json({ success: false, message: "Invalid product id" });
+    }
+
+    const product = await productsCollection.findOne({ _id: new ObjectId(productId) });
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+
+    if (product.seller_info?.seller_id === buyerInfo?.userId) {
+      return res.status(403).json({ success: false, message: "You cannot order your own product" });
+    }
+
+    if (quantity < 1 || product.stock < quantity) {
+      return res.status(400).json({ success: false, message: "Not enough stock available" });
+    }
+
+    const order = {
+      buyerInfo,
+      sellerInfo: product.seller_info,
+      productId,
+      productTitle: product.title,
+      productImage: product.imageUrl,
+      price: product.price,
+      quantity,
+      totalAmount: product.price * quantity,
+      paymentStatus: "pending", // TODO: replace once Stripe webhook confirms real payment
+      orderStatus: "processing",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await ordersCollection.insertOne(order);
+
+    await productsCollection.updateOne(
+      { _id: new ObjectId(productId) },
+      { $inc: { stock: -quantity } }
+    );
+
+    res.status(201).json({ success: true, data: { ...order, _id: result.insertedId } });
+  } catch (err) {
+    console.error("Failed to create order:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 
 // Start server
