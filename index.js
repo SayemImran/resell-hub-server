@@ -202,6 +202,121 @@ app.post("/api/orders", async (req, res) => {
 });
 
 
+
+
+// buyer order routes
+app.get("/api/orders/buyer/:buyerId", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const ordersCollection = db.collection("orders");
+
+    const { buyerId } = req.params;
+
+    const orders = await ordersCollection
+      .find({ "buyerInfo.userId": buyerId })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({ success: true, count: orders.length, data: orders });
+  } catch (err) {
+    console.error("Failed to fetch buyer orders:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+
+
+// Add a product to wishlist
+app.post("/api/wishlist", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const wishlistCollection = db.collection("wishlists");
+
+    const { userId, productId } = req.body;
+
+    if (!ObjectId.isValid(productId)) {
+      return res.status(400).json({ success: false, message: "Invalid product id" });
+    }
+
+    // Avoid duplicate entries for the same user + product
+    const existing = await wishlistCollection.findOne({ userId, productId });
+    if (existing) {
+      return res.status(200).json({ success: true, message: "Already in wishlist" });
+    }
+
+    await wishlistCollection.insertOne({
+      userId,
+      productId,
+      addedAt: new Date(),
+    });
+
+    res.status(201).json({ success: true, message: "Added to wishlist" });
+  } catch (err) {
+    console.error("Failed to add to wishlist:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Remove a product from wishlist
+app.delete("/api/wishlist/:userId/:productId", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const wishlistCollection = db.collection("wishlists");
+
+    const { userId, productId } = req.params;
+
+    await wishlistCollection.deleteOne({ userId, productId });
+
+    res.status(200).json({ success: true, message: "Removed from wishlist" });
+  } catch (err) {
+    console.error("Failed to remove from wishlist:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Get all wishlist items for a user, joined with live product data
+app.get("/api/wishlist/:userId", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const wishlistCollection = db.collection("wishlists");
+
+    const { userId } = req.params;
+
+    const wishlist = await wishlistCollection
+      .aggregate([
+        { $match: { userId } },
+        {
+          $addFields: {
+            productObjId: { $toObjectId: "$productId" },
+          },
+        },
+        {
+          $lookup: {
+            from: "products",
+            localField: "productObjId",
+            foreignField: "_id",
+            as: "product",
+          },
+        },
+        { $unwind: "$product" },
+        { $sort: { addedAt: -1 } },
+      ])
+      .toArray();
+
+    res.status(200).json({ success: true, count: wishlist.length, data: wishlist });
+  } catch (err) {
+    console.error("Failed to fetch wishlist:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+
+
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
