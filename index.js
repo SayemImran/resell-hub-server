@@ -316,6 +316,191 @@ app.get("/api/wishlist/:userId", async (req, res) => {
 
 
 
+// All review routes
+app.post("/api/reviews", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const reviewsCollection = db.collection("reviews");
+    const ordersCollection = db.collection("orders");
+
+    const { reviewerInfo, productId, rating, comment } = req.body;
+
+    if (!reviewerInfo?.userId || !productId) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ success: false, message: "Rating must be between 1 and 5" });
+    }
+
+    // Verified purchase check
+    // TODO: once Stripe is live, add { paymentStatus: "paid" } to this filter
+    const hasPurchased = await ordersCollection.findOne({
+      "buyerInfo.userId": reviewerInfo.userId,
+      productId,
+    });
+
+    if (!hasPurchased) {
+      return res.status(403).json({
+        success: false,
+        message: "Only buyers who have ordered this product can leave a review",
+      });
+    }
+
+    // One review per user per product
+    const existingReview = await reviewsCollection.findOne({
+      "reviewerInfo.userId": reviewerInfo.userId,
+      productId,
+    });
+
+    if (existingReview) {
+      return res.status(409).json({
+        success: false,
+        message: "You've already reviewed this product",
+      });
+    }
+
+    const review = {
+      reviewerInfo,
+      productId,
+      rating,
+      comment,
+      createdAt: new Date(),
+    };
+
+    const result = await reviewsCollection.insertOne(review);
+
+    res.status(201).json({ success: true, data: { ...review, _id: result.insertedId } });
+  } catch (err) {
+    console.error("Failed to create review:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+
+// get review by id 
+app.get("/api/reviews/:productId", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const reviewsCollection = db.collection("reviews");
+
+    const { productId } = req.params;
+
+    const reviews = await reviewsCollection
+      .find({ productId })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    const averageRating =
+      reviews.length > 0
+        ? reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length
+        : 0;
+
+    res.status(200).json({
+      success: true,
+      count: reviews.length,
+      averageRating: Number(averageRating.toFixed(1)),
+      data: reviews,
+    });
+  } catch (err) {
+    console.error("Failed to fetch reviews:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+
+// fetch the orders by seller id
+app.get("/api/orders/seller/:sellerId", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const ordersCollection = db.collection("orders");
+
+    const { sellerId } = req.params;
+
+    const orders = await ordersCollection
+      .find({ "sellerInfo.seller_id": sellerId })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({ success: true, count: orders.length, data: orders });
+  } catch (err) {
+    console.error("Failed to fetch seller orders:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+
+
+
+const VALID_STATUSES = ["pending", "accepted", "rejected", "processing", "shipped", "delivered"];
+
+// Defines which statuses are allowed to move to which next status
+const ALLOWED_TRANSITIONS = {
+  pending: ["accepted", "rejected"],
+  accepted: ["processing"],
+  processing: ["shipped"],
+  shipped: ["delivered"],
+  rejected: [],
+  delivered: [],
+};
+
+app.patch("/api/orders/:id/status", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const ordersCollection = db.collection("orders");
+
+    const { id } = req.params;
+    const { status, sellerId } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid order id" });
+    }
+
+    if (!VALID_STATUSES.includes(status)) {
+      return res.status(400).json({ success: false, message: "Invalid status value" });
+    }
+
+    const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    // Only the seller who owns this order can update it
+    if (order.sellerInfo?.seller_id !== sellerId) {
+      return res.status(403).json({ success: false, message: "Not authorized to update this order" });
+    }
+
+    const allowedNext = ALLOWED_TRANSITIONS[order.orderStatus] || [];
+
+    if (!allowedNext.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot move order from "${order.orderStatus}" to "${status}"`,
+      });
+    }
+
+    await ordersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { orderStatus: status, updatedAt: new Date() } }
+    );
+
+    res.status(200).json({ success: true, message: `Order marked as ${status}` });
+  } catch (err) {
+    console.error("Failed to update order status:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+
 
 // Start server
 app.listen(PORT, () => {
