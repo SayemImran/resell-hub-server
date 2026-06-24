@@ -34,7 +34,7 @@ async function connectDB() {
 
 connectDB();
 
-// Routes
+//  home Routes
 app.get("/", (req, res) => {
   res.json({ message: "Welcome to Resell Dokan Server!" });
 });
@@ -91,11 +91,15 @@ app.get("/api/products/:id", async (req, res) => {
 // post or upload products
 app.post("/api/product/add", async (req, res) => {
   try {
-    const data = req.body;
+    const productData={
+      ...req.body,
+      approvalStatus:"pending",
+      createdAt: new Date(),
+    }
     const db = client.db("resell_hub_db");
     const productsCollection = db.collection("products");
 
-    const result = await productsCollection.insertOne(data);
+    const result = await productsCollection.insertOne(productData);
 
     res.status(201).json({
       success: true,
