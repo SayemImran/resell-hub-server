@@ -44,10 +44,10 @@ app.get("/api/products", async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const productsCollection = db.collection("products");
+    const { approvalStatus } = req.query; // fixed spelling
+    const filter = approvalStatus ? { approvalStatus } : {};
 
-    // Fetch all products and convert the MongoDB cursor to an array
-    const products = await productsCollection.find({}).toArray();
-
+    const products = await productsCollection.find(filter).toArray();
     res.status(200).json({
       success: true,
       count: products.length,
@@ -62,6 +62,8 @@ app.get("/api/products", async (req, res) => {
     });
   }
 });
+
+
 
 // get the specific item
 app.get("/api/products/:id", async (req, res) => {
@@ -193,10 +195,7 @@ app.post("/api/orders", async (req, res) => {
 
     const result = await ordersCollection.insertOne(order);
 
-    await productsCollection.updateOne(
-      { _id: new ObjectId(productId) },
-      { $inc: { stock: -quantity } }
-    );
+   
 
     res.status(201).json({ success: true, data: { ...order, _id: result.insertedId } });
   } catch (err) {
@@ -505,6 +504,111 @@ app.patch("/api/orders/:id/status", async (req, res) => {
 
 
 
+
+
+
+
+// Get all pending products for admin review
+app.get("/api/admin/products/pending", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const productsCollection = db.collection("products");
+
+    const products = await productsCollection
+      .find({ approvalStatus: "pending" })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({ success: true, count: products.length, data: products });
+  } catch (err) {
+    console.error("Failed to fetch pending products:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Approve or reject a product
+app.patch("/api/admin/products/:id/approval", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const productsCollection = db.collection("products");
+
+    const { id } = req.params;
+    const { approvalStatus } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid product id" });
+    }
+
+    if (!["approved", "rejected"].includes(approvalStatus)) {
+      return res.status(400).json({ success: false, message: "Invalid approval status" });
+    }
+
+    const result = await productsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { approvalStatus, updatedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+
+    res.status(200).json({ success: true, message: `Product ${approvalStatus}` });
+  } catch (err) {
+    console.error("Failed to update approval status:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+
+// Stripe web hook
+app.post(
+  "/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    } catch (err) {
+      console.error("Webhook signature verification failed:", err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      const orderId = session.metadata.orderId;
+
+      try {
+        const db = client.db("resell_hub_db");
+        const ordersCollection = db.collection("orders");
+        const productsCollection = db.collection("products");
+
+        const order = await ordersCollection.findOne({ _id: new ObjectId(orderId) });
+
+        if (order && order.paymentStatus !== "paid") {
+          await ordersCollection.updateOne(
+            { _id: new ObjectId(orderId) },
+            { $set: { paymentStatus: "paid", updatedAt: new Date() } }
+          );
+
+          await productsCollection.updateOne(
+            { _id: new ObjectId(order.productId) },
+            { $inc: { stock: -order.quantity } }
+          );
+
+          console.log(`Order ${orderId} marked as paid, stock updated.`);
+        }
+      } catch (err) {
+        console.error("Failed to process webhook event:", err);
+      }
+    }
+
+    res.status(200).json({ received: true });
+  }
+);
 
 // Start server
 app.listen(PORT, () => {
