@@ -4,6 +4,7 @@ require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const PORT = process.env.PORT || 5000;
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 // Middleware
 app.use(
@@ -44,8 +45,11 @@ app.get("/api/products", async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const productsCollection = db.collection("products");
-    const { approvalStatus } = req.query; // fixed spelling
-    const filter = approvalStatus ? { approvalStatus } : {};
+    const { approvalStatus, sellerId } = req.query;
+
+    const filter = {};
+    if (approvalStatus) filter.approvalStatus = approvalStatus;
+    if (sellerId) filter["seller_info.seller_id"] = sellerId;
 
     const products = await productsCollection.find(filter).toArray();
     res.status(200).json({
@@ -204,9 +208,6 @@ app.post("/api/orders", async (req, res) => {
   }
 });
 
-
-
-
 // buyer order routes
 app.get("/api/orders/buyer/:buyerId", async (req, res) => {
   try {
@@ -227,6 +228,25 @@ app.get("/api/orders/buyer/:buyerId", async (req, res) => {
   }
 });
 
+// fetch the orders by seller id
+app.get("/api/orders/seller/:sellerId", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const ordersCollection = db.collection("orders");
+
+    const { sellerId } = req.params;
+
+    const orders = await ordersCollection
+      .find({ "sellerInfo.seller_id": sellerId })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({ success: true, count: orders.length, data: orders });
+  } catch (err) {
+    console.error("Failed to fetch seller orders:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 
 
@@ -416,31 +436,6 @@ app.get("/api/reviews/:productId", async (req, res) => {
 
 
 
-// fetch the orders by seller id
-app.get("/api/orders/seller/:sellerId", async (req, res) => {
-  try {
-    const db = client.db("resell_hub_db");
-    const ordersCollection = db.collection("orders");
-
-    const { sellerId } = req.params;
-
-    const orders = await ordersCollection
-      .find({ "sellerInfo.seller_id": sellerId })
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    res.status(200).json({ success: true, count: orders.length, data: orders });
-  } catch (err) {
-    console.error("Failed to fetch seller orders:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-
-
-
-
-
-
 const VALID_STATUSES = ["pending", "accepted", "rejected", "processing", "shipped", "delivered"];
 
 // Defines which statuses are allowed to move to which next status
@@ -503,11 +498,6 @@ app.patch("/api/orders/:id/status", async (req, res) => {
 
 
 
-
-
-
-
-
 // Get all pending products for admin review
 app.get("/api/admin/products/pending", async (req, res) => {
   try {
@@ -560,55 +550,283 @@ app.patch("/api/admin/products/:id/approval", async (req, res) => {
 });
 
 
+// Add an item to cart (or increase quantity if already there)
+app.post("/api/cart", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const cartCollection = db.collection("carts");
+    const productsCollection = db.collection("products");
 
+    const { userId, productId, quantity } = req.body;
 
-// Stripe web hook
-app.post(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    } catch (err) {
-      console.error("Webhook signature verification failed:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
+    if (!ObjectId.isValid(productId)) {
+      return res.status(400).json({ success: false, message: "Invalid product id" });
     }
 
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      const orderId = session.metadata.orderId;
+    const product = await productsCollection.findOne({ _id: new ObjectId(productId) });
 
-      try {
-        const db = client.db("resell_hub_db");
-        const ordersCollection = db.collection("orders");
-        const productsCollection = db.collection("products");
-
-        const order = await ordersCollection.findOne({ _id: new ObjectId(orderId) });
-
-        if (order && order.paymentStatus !== "paid") {
-          await ordersCollection.updateOne(
-            { _id: new ObjectId(orderId) },
-            { $set: { paymentStatus: "paid", updatedAt: new Date() } }
-          );
-
-          await productsCollection.updateOne(
-            { _id: new ObjectId(order.productId) },
-            { $inc: { stock: -order.quantity } }
-          );
-
-          console.log(`Order ${orderId} marked as paid, stock updated.`);
-        }
-      } catch (err) {
-        console.error("Failed to process webhook event:", err);
-      }
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found" });
     }
 
-    res.status(200).json({ received: true });
+    if (product.seller_info?.seller_id === userId) {
+      return res.status(403).json({ success: false, message: "You cannot add your own product to cart" });
+    }
+
+    let cart = await cartCollection.findOne({ userId });
+
+    if (!cart) {
+      cart = { userId, items: [], createdAt: new Date(), updatedAt: new Date() };
+    }
+
+    const existingItem = cart.items.find((item) => item.productId === productId);
+
+    if (existingItem) {
+      existingItem.quantity = Math.min(existingItem.quantity + quantity, product.stock);
+    } else {
+      cart.items.push({ productId, quantity: Math.min(quantity, product.stock) });
+    }
+
+    cart.updatedAt = new Date();
+
+    await cartCollection.updateOne(
+      { userId },
+      { $set: cart },
+      { upsert: true }
+    );
+
+    res.status(200).json({ success: true, message: "Added to cart" });
+  } catch (err) {
+    console.error("Failed to add to cart:", err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
-);
+});
+
+// Get cart contents, joined with live product data
+app.get("/api/cart/:userId", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const cartCollection = db.collection("carts");
+    const productsCollection = db.collection("products");
+
+    const { userId } = req.params;
+
+    const cart = await cartCollection.findOne({ userId });
+
+    if (!cart || cart.items.length === 0) {
+      return res.status(200).json({ success: true, data: [] });
+    }
+
+    const productIds = cart.items.map((item) => new ObjectId(item.productId));
+    const products = await productsCollection.find({ _id: { $in: productIds } }).toArray();
+
+    const enrichedItems = cart.items.map((item) => {
+      const product = products.find((p) => p._id.toString() === item.productId);
+      return {
+        productId: item.productId,
+        quantity: item.quantity,
+        product, // full product details (title, price, imageUrl, stock, seller_info, etc.)
+      };
+    }).filter((item) => item.product); // drop items whose product was deleted
+
+    res.status(200).json({ success: true, data: enrichedItems });
+  } catch (err) {
+    console.error("Failed to fetch cart:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Update quantity of a specific item
+app.patch("/api/cart/:userId/:productId", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const cartCollection = db.collection("carts");
+
+    const { userId, productId } = req.params;
+    const { quantity } = req.body;
+
+    if (quantity < 1) {
+      return res.status(400).json({ success: false, message: "Quantity must be at least 1" });
+    }
+
+    await cartCollection.updateOne(
+      { userId, "items.productId": productId },
+      { $set: { "items.$.quantity": quantity, updatedAt: new Date() } }
+    );
+
+    res.status(200).json({ success: true, message: "Cart updated" });
+  } catch (err) {
+    console.error("Failed to update cart:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Remove an item from cart
+app.delete("/api/cart/:userId/:productId", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const cartCollection = db.collection("carts");
+
+    const { userId, productId } = req.params;
+
+    await cartCollection.updateOne(
+      { userId },
+      { $pull: { items: { productId } }, $set: { updatedAt: new Date() } }
+    );
+
+    res.status(200).json({ success: true, message: "Removed from cart" });
+  } catch (err) {
+    console.error("Failed to remove from cart:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Clear entire cart (used after successful checkout)
+app.delete("/api/cart/:userId", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const cartCollection = db.collection("carts");
+
+    const { userId } = req.params;
+
+    await cartCollection.updateOne(
+      { userId },
+      { $set: { items: [], updatedAt: new Date() } }
+    );
+
+    res.status(200).json({ success: true, message: "Cart cleared" });
+  } catch (err) {
+    console.error("Failed to clear cart:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+// checkout applied here
+app.post("/api/orders/checkout", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const ordersCollection = db.collection("orders");
+    const productsCollection = db.collection("products");
+    const cartCollection = db.collection("carts");
+
+    const { buyerInfo, items, deliveryInfo } = req.body;
+    // items: [{ productId, quantity }, ...]
+
+    if (!items || items.length === 0) {
+      return res.status(400).json({ success: false, message: "Cart is empty" });
+    }
+
+    const checkoutGroupId = new ObjectId().toString(); // links all orders from this single checkout
+    const createdOrders = [];
+
+    for (const item of items) {
+      if (!ObjectId.isValid(item.productId)) continue;
+
+      const product = await productsCollection.findOne({ _id: new ObjectId(item.productId) });
+
+      if (!product) continue;
+
+      if (product.seller_info?.seller_id === buyerInfo.userId) {
+        return res.status(403).json({
+          success: false,
+          message: `You cannot order your own product: ${product.title}`,
+        });
+      }
+
+      if (product.stock < item.quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `Not enough stock for "${product.title}"`,
+        });
+      }
+
+      const order = {
+        buyerInfo,
+        sellerInfo: product.seller_info,
+        productId: item.productId,
+        productTitle: product.title,
+        productImage: product.imageUrl,
+        price: product.price,
+        quantity: item.quantity,
+        totalAmount: product.price * item.quantity,
+        deliveryInfo,
+        checkoutGroupId,
+        paymentStatus: "pending",
+        orderStatus: "processing",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const result = await ordersCollection.insertOne(order);
+      createdOrders.push({ ...order, _id: result.insertedId.toString() });
+    }
+
+    if (createdOrders.length === 0) {
+      return res.status(400).json({ success: false, message: "No valid items to order" });
+    }
+
+    res.status(201).json({ success: true, checkoutGroupId, data: createdOrders });
+  } catch (err) {
+    console.error("Failed to create checkout orders:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Confirm payment for an entire checkout group (called from success page)
+app.patch("/api/orders/checkout/:checkoutGroupId/confirm-payment", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const ordersCollection = db.collection("orders");
+    const productsCollection = db.collection("products");
+    const transactionsCollection = db.collection("transactions");
+
+    const { checkoutGroupId } = req.params;
+    const { paymentIntentId, paymentMethod } = req.body;
+
+    const orders = await ordersCollection.find({ checkoutGroupId }).toArray();
+
+    if (orders.length === 0) {
+      return res.status(404).json({ success: false, message: "No orders found for this checkout" });
+    }
+
+    if (orders[0].paymentStatus === "paid") {
+      return res.status(200).json({ success: true, message: "Already confirmed" });
+    }
+
+    await ordersCollection.updateMany(
+      { checkoutGroupId },
+      { $set: { paymentStatus: "paid", paymentIntentId, updatedAt: new Date() } }
+    );
+
+    for (const order of orders) {
+      await productsCollection.updateOne(
+        { _id: new ObjectId(order.productId) },
+        { $inc: { stock: -order.quantity } }
+      );
+    }
+
+    const totalAmount = orders.reduce((sum, o) => sum + o.totalAmount, 0);
+
+    await transactionsCollection.insertOne({
+      transactionId: paymentIntentId,
+      buyerId: orders[0].buyerInfo.userId,
+      orderIds: orders.map((o) => o._id.toString()),
+      checkoutGroupId,
+      amount: totalAmount,
+      paymentStatus: "paid",
+      paymentMethod: paymentMethod || "card",
+      paymentDate: new Date(),
+    });
+
+    res.status(200).json({ success: true, message: "Payment confirmed" });
+  } catch (err) {
+    console.error("Failed to confirm checkout payment:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
 
 // Start server
 app.listen(PORT, () => {
