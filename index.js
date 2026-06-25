@@ -4,7 +4,9 @@ require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const PORT = process.env.PORT || 5000;
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const { verifyJWT, requireRole } = require("./middlewere/auth.js");
+
+
 
 // Middleware
 app.use(
@@ -95,7 +97,7 @@ app.get("/api/products/:id", async (req, res) => {
 });
 
 // post or upload products
-app.post("/api/product/add", async (req, res) => {
+app.post("/api/product/add",verifyJWT, requireRole("Seller","Admin"),async (req, res) => {
   try {
     const productData={
       ...req.body,
@@ -153,60 +155,6 @@ app.patch("/api/products/edit/:id", async (req, res) => {
 });
 
 
-
-// order routes
-
-app.post("/api/orders", async (req, res) => {
-  try {
-    const db = client.db("resell_hub_db");
-    const ordersCollection = db.collection("orders");
-    const productsCollection = db.collection("products");
-
-    const { buyerInfo, productId, quantity } = req.body;
-
-    if (!ObjectId.isValid(productId)) {
-      return res.status(400).json({ success: false, message: "Invalid product id" });
-    }
-
-    const product = await productsCollection.findOne({ _id: new ObjectId(productId) });
-
-    if (!product) {
-      return res.status(404).json({ success: false, message: "Product not found" });
-    }
-
-    if (product.seller_info?.seller_id === buyerInfo?.userId) {
-      return res.status(403).json({ success: false, message: "You cannot order your own product" });
-    }
-
-    if (quantity < 1 || product.stock < quantity) {
-      return res.status(400).json({ success: false, message: "Not enough stock available" });
-    }
-
-    const order = {
-      buyerInfo,
-      sellerInfo: product.seller_info,
-      productId,
-      productTitle: product.title,
-      productImage: product.imageUrl,
-      price: product.price,
-      quantity,
-      totalAmount: product.price * quantity,
-      paymentStatus: "pending", // TODO: replace once Stripe webhook confirms real payment
-      orderStatus: "processing",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    const result = await ordersCollection.insertOne(order);
-
-   
-
-    res.status(201).json({ success: true, data: { ...order, _id: result.insertedId } });
-  } catch (err) {
-    console.error("Failed to create order:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
-});
 
 // buyer order routes
 app.get("/api/orders/buyer/:buyerId", async (req, res) => {
@@ -827,6 +775,105 @@ app.patch("/api/orders/checkout/:checkoutGroupId/confirm-payment", async (req, r
 });
 
 
+// admin stuffs here
+app.get("/api/admin/stats", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+
+    const usersCollection = db.collection("user"); // better-auth's default collection
+    const productsCollection = db.collection("products");
+    const ordersCollection = db.collection("orders");
+
+    const [totalUsers, totalProducts, totalOrders] = await Promise.all([
+      usersCollection.countDocuments(),
+      productsCollection.countDocuments(),
+      ordersCollection.countDocuments(),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: { totalUsers, totalProducts, totalOrders },
+    });
+  } catch (err) {
+    console.error("Failed to fetch admin stats:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+// View all users
+app.get("/api/admin/users", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const usersCollection = db.collection("user");
+
+    const users = await usersCollection
+      .find({}, { projection: { password: 0 } }) // never return password hashes
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({ success: true, count: users.length, data: users });
+  } catch (err) {
+    console.error("Failed to fetch users:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Update account status (block/unblock)
+app.patch("/api/admin/users/:id/status", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const usersCollection = db.collection("user");
+
+    const { id } = req.params;
+    const { accountStatus } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid user id" });
+    }
+
+    if (!["active", "blocked"].includes(accountStatus)) {
+      return res.status(400).json({ success: false, message: "Invalid status value" });
+    }
+
+    const result = await usersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { accountStatus, updatedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    res.status(200).json({ success: true, message: `User ${accountStatus}` });
+  } catch (err) {
+    console.error("Failed to update user status:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Delete user account
+app.delete("/api/admin/users/:id", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const usersCollection = db.collection("user");
+
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid user id" });
+    }
+
+    const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    res.status(200).json({ success: true, message: "User deleted" });
+  } catch (err) {
+    console.error("Failed to delete user:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 // Start server
 app.listen(PORT, () => {
