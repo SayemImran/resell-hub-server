@@ -122,7 +122,7 @@ app.post("/api/product/add",verifyJWT, requireRole("Seller","Admin"),async (req,
 
 
 // update the target product
-app.patch("/api/products/edit/:id", async (req, res) => {
+app.patch("/api/products/edit/:id", verifyJWT, requireRole("Seller", "Admin"),async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const productsCollection = db.collection("products");
@@ -157,7 +157,7 @@ app.patch("/api/products/edit/:id", async (req, res) => {
 
 
 // buyer order routes
-app.get("/api/orders/buyer/:buyerId", async (req, res) => {
+app.get("/api/orders/buyer/:buyerId",verifyJWT, async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const ordersCollection = db.collection("orders");
@@ -177,7 +177,7 @@ app.get("/api/orders/buyer/:buyerId", async (req, res) => {
 });
 
 // fetch the orders by seller id
-app.get("/api/orders/seller/:sellerId", async (req, res) => {
+app.get("/api/orders/seller/:sellerId", verifyJWT,async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const ordersCollection = db.collection("orders");
@@ -200,7 +200,7 @@ app.get("/api/orders/seller/:sellerId", async (req, res) => {
 
 
 // Add a product to wishlist
-app.post("/api/wishlist", async (req, res) => {
+app.post("/api/wishlist",verifyJWT, async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const wishlistCollection = db.collection("wishlists");
@@ -231,7 +231,7 @@ app.post("/api/wishlist", async (req, res) => {
 });
 
 // Remove a product from wishlist
-app.delete("/api/wishlist/:userId/:productId", async (req, res) => {
+app.delete("/api/wishlist/:userId/:productId", verifyJWT, async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const wishlistCollection = db.collection("wishlists");
@@ -248,7 +248,7 @@ app.delete("/api/wishlist/:userId/:productId", async (req, res) => {
 });
 
 // Get all wishlist items for a user, joined with live product data
-app.get("/api/wishlist/:userId", async (req, res) => {
+app.get("/api/wishlist/:userId",verifyJWT, async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const wishlistCollection = db.collection("wishlists");
@@ -288,7 +288,7 @@ app.get("/api/wishlist/:userId", async (req, res) => {
 
 
 // All review routes
-app.post("/api/reviews", async (req, res) => {
+app.post("/api/reviews",verifyJWT, async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const reviewsCollection = db.collection("reviews");
@@ -396,7 +396,7 @@ const ALLOWED_TRANSITIONS = {
   delivered: [],
 };
 
-app.patch("/api/orders/:id/status", async (req, res) => {
+app.patch("/api/orders/:id/status", verifyJWT, requireRole("Seller", "Admin"), async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const ordersCollection = db.collection("orders");
@@ -447,7 +447,7 @@ app.patch("/api/orders/:id/status", async (req, res) => {
 
 
 // Get all pending products for admin review
-app.get("/api/admin/products/pending", async (req, res) => {
+app.get("/api/admin/products/pending", verifyJWT, requireRole("Admin"),async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const productsCollection = db.collection("products");
@@ -465,7 +465,7 @@ app.get("/api/admin/products/pending", async (req, res) => {
 });
 
 // Approve or reject a product
-app.patch("/api/admin/products/:id/approval", async (req, res) => {
+app.patch("/api/admin/products/:id/approval", verifyJWT, requireRole("Admin"),async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const productsCollection = db.collection("products");
@@ -499,7 +499,7 @@ app.patch("/api/admin/products/:id/approval", async (req, res) => {
 
 
 // Add an item to cart (or increase quantity if already there)
-app.post("/api/cart", async (req, res) => {
+app.post("/api/cart", verifyJWT,async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const cartCollection = db.collection("carts");
@@ -551,7 +551,7 @@ app.post("/api/cart", async (req, res) => {
 });
 
 // Get cart contents, joined with live product data
-app.get("/api/cart/:userId", async (req, res) => {
+app.get("/api/cart/:userId",verifyJWT, async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const cartCollection = db.collection("carts");
@@ -585,7 +585,7 @@ app.get("/api/cart/:userId", async (req, res) => {
 });
 
 // Update quantity of a specific item
-app.patch("/api/cart/:userId/:productId", async (req, res) => {
+app.patch("/api/cart/:userId/:productId",verifyJWT, async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const cartCollection = db.collection("carts");
@@ -630,7 +630,7 @@ app.delete("/api/cart/:userId/:productId", async (req, res) => {
 });
 
 // Clear entire cart (used after successful checkout)
-app.delete("/api/cart/:userId", async (req, res) => {
+app.delete("/api/cart/:userId",verifyJWT, async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const cartCollection = db.collection("carts");
@@ -651,7 +651,7 @@ app.delete("/api/cart/:userId", async (req, res) => {
 
 
 // checkout applied here
-app.post("/api/orders/checkout", async (req, res) => {
+app.post("/api/orders/checkout", verifyJWT, async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const ordersCollection = db.collection("orders");
@@ -776,7 +776,7 @@ app.patch("/api/orders/checkout/:checkoutGroupId/confirm-payment", async (req, r
 
 
 // admin stuffs here
-app.get("/api/admin/stats", async (req, res) => {
+app.get("/api/admin/stats", verifyJWT, requireRole("Admin"),async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
 
@@ -800,7 +800,7 @@ app.get("/api/admin/stats", async (req, res) => {
   }
 });
 // View all users
-app.get("/api/admin/users", async (req, res) => {
+app.get("/api/admin/users",verifyJWT, requireRole("Admin"), async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const usersCollection = db.collection("user");
@@ -818,7 +818,7 @@ app.get("/api/admin/users", async (req, res) => {
 });
 
 // Update account status (block/unblock)
-app.patch("/api/admin/users/:id/status", async (req, res) => {
+app.patch("/api/admin/users/:id/status",verifyJWT, requireRole("Admin"), async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const usersCollection = db.collection("user");
@@ -851,7 +851,7 @@ app.patch("/api/admin/users/:id/status", async (req, res) => {
 });
 
 // Delete user account
-app.delete("/api/admin/users/:id", async (req, res) => {
+app.delete("/api/admin/users/:id",verifyJWT, requireRole("Admin"), async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const usersCollection = db.collection("user");
