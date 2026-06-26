@@ -47,13 +47,16 @@ app.get("/api/products", async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const productsCollection = db.collection("products");
-    const { approvalStatus, sellerId } = req.query;
+    const { approvalStatus, sellerId, limit } = req.query;
 
     const filter = {};
     if (approvalStatus) filter.approvalStatus = approvalStatus;
     if (sellerId) filter["seller_info.seller_id"] = sellerId;
 
-    const products = await productsCollection.find(filter).toArray();
+    let query = productsCollection.find(filter).sort({ createdAt: -1 });
+    if (limit) query = query.limit(Number(limit));
+
+    const products = await query.toArray();
     res.status(200).json({
       success: true,
       count: products.length,
@@ -874,6 +877,121 @@ app.delete("/api/admin/users/:id",verifyJWT, requireRole("Admin"), async (req, r
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
+
+//  Homepage needed routes.
+// Homepage: latest approved products
+app.get("/api/home/featured-products", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const productsCollection = db.collection("products");
+
+    const products = await productsCollection
+      .find({ approvalStatus: "approved" })
+      .sort({ createdAt: -1 })
+      .limit(6)
+      .toArray();
+
+    res.status(200).json({ success: true, data: products });
+  } catch (err) {
+    console.error("Failed to fetch featured products:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Homepage: product count per category
+app.get("/api/home/category-counts", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const productsCollection = db.collection("products");
+
+    const counts = await productsCollection
+      .aggregate([
+        { $match: { approvalStatus: "approved" } },
+        { $group: { _id: "$category", count: { $sum: 1 } } },
+      ])
+      .toArray();
+
+    res.status(200).json({ success: true, data: counts });
+  } catch (err) {
+    console.error("Failed to fetch category counts:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Homepage: marketplace-wide stats
+app.get("/api/home/stats", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const usersCollection = db.collection("user");
+    const productsCollection = db.collection("products");
+    const ordersCollection = db.collection("orders");
+
+    const [totalProducts, totalSellers, totalBuyers, completedOrders] = await Promise.all([
+      productsCollection.countDocuments({ approvalStatus: "approved" }),
+      usersCollection.countDocuments({ role: "Seller" }),
+      usersCollection.countDocuments({ role: "Buyer" }),
+      ordersCollection.countDocuments({ orderStatus: "delivered" }),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: { totalProducts, totalSellers, totalBuyers, completedOrders },
+    });
+  } catch (err) {
+    console.error("Failed to fetch homepage stats:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Homepage: top sellers by completed sales
+app.get("/api/home/trusted-sellers", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const ordersCollection = db.collection("orders");
+
+    const topSellers = await ordersCollection
+      .aggregate([
+        { $match: { orderStatus: "delivered" } },
+        {
+          $group: {
+            _id: "$sellerInfo.seller_id",
+            name: { $first: "$sellerInfo.name" },
+            email: { $first: "$sellerInfo.email" },
+            completedSales: { $sum: 1 },
+          },
+        },
+        { $sort: { completedSales: -1 } },
+        { $limit: 5 },
+        {
+          $addFields: {
+            sellerObjId: { $toObjectId: "$_id" },
+          },
+        },
+        {
+          $lookup: {
+            from: "user",
+            localField: "sellerObjId",
+            foreignField: "_id",
+            as: "userDoc",
+          },
+        },
+        {
+          $addFields: {
+            imageUrl: { $arrayElemAt: ["$userDoc.imageUrl", 0] },
+          },
+        },
+        { $project: { userDoc: 0, sellerObjId: 0 } },
+      ])
+      .toArray();
+
+    res.status(200).json({ success: true, data: topSellers });
+  } catch (err) {
+    console.error("Failed to fetch trusted sellers:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
 
 // Start server
 app.listen(PORT, () => {
