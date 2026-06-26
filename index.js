@@ -98,6 +98,33 @@ app.get("/api/products/:id", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+// delete target product
+app.delete("/api/products/:id",verifyJWT, requireRole("Seller","Admin"),async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const productsCollection = db.collection("products");
+
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid product id" });
+    }
+
+    const product = await productsCollection.findOneAndDelete({ _id: new ObjectId(id) });
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+
+    res.status(200).json({ success: true, message: "Product deleted successfully" });
+  } catch (err) {
+    console.error("Failed to delete product:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
 
 // post or upload products
 app.post("/api/product/add",verifyJWT, requireRole("Seller","Admin"),async (req, res) => {
@@ -920,7 +947,7 @@ app.get("/api/home/category-counts", async (req, res) => {
 });
 
 // Homepage: marketplace-wide stats
-app.get("/api/home/stats", async (req, res) => {
+app.get("/api/stats/marketplace", async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const usersCollection = db.collection("user");
@@ -939,13 +966,12 @@ app.get("/api/home/stats", async (req, res) => {
       data: { totalProducts, totalSellers, totalBuyers, completedOrders },
     });
   } catch (err) {
-    console.error("Failed to fetch homepage stats:", err);
+    console.error("Failed to fetch marketplace stats:", err);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-// Homepage: top sellers by completed sales
-app.get("/api/home/trusted-sellers", async (req, res) => {
+app.get("/api/sellers/trusted", async (req, res) => {
   try {
     const db = client.db("resell_hub_db");
     const ordersCollection = db.collection("orders");
@@ -962,26 +988,7 @@ app.get("/api/home/trusted-sellers", async (req, res) => {
           },
         },
         { $sort: { completedSales: -1 } },
-        { $limit: 5 },
-        {
-          $addFields: {
-            sellerObjId: { $toObjectId: "$_id" },
-          },
-        },
-        {
-          $lookup: {
-            from: "user",
-            localField: "sellerObjId",
-            foreignField: "_id",
-            as: "userDoc",
-          },
-        },
-        {
-          $addFields: {
-            imageUrl: { $arrayElemAt: ["$userDoc.imageUrl", 0] },
-          },
-        },
-        { $project: { userDoc: 0, sellerObjId: 0 } },
+        { $limit: 6 },
       ])
       .toArray();
 
@@ -991,6 +998,124 @@ app.get("/api/home/trusted-sellers", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
+
+
+// GET all orders (admin)
+app.get("/api/admin/orders",verifyJWT, requireRole("Admin"), async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const orders = await db.collection("orders").find({}).sort({ createdAt: -1 }).toArray();
+    res.status(200).json({ success: true, data: orders });
+  } catch (err) {
+    console.error("Failed to fetch orders:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// PATCH update order status (admin)
+app.patch("/api/admin/orders/:id",verifyJWT,requireRole("Admin") ,async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+    const { id } = req.params;
+    const { orderStatus, paymentStatus } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid order id" });
+    }
+
+    // Build the dynamic update body
+    const updateFields = { updatedAt: new Date() };
+    if (orderStatus !== undefined) updateFields.orderStatus = orderStatus;
+    if (paymentStatus !== undefined) updateFields.paymentStatus = paymentStatus;
+
+    const result = await db.collection("orders").findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: updateFields },
+      { returnDocument: "after" } // Ensures we get the modified version back
+    );
+
+    // Extract document safely across MongoDB driver versions
+    const updatedDocument = result.value ? result.value : result;
+
+    if (!updatedDocument) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    // Return the updated data structure cleanly
+    res.status(200).json({ success: true, data: updatedDocument });
+  } catch (err) {
+    console.error("Failed to update order:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+//  admin statistics route
+app.get("/api/admin/stats/summary", async (req, res) => {
+  try {
+    const db = client.db("resell_hub_db");
+
+    // 1. Calculate Revenue and Total Order Counts
+    const orderStats = await db.collection("orders").aggregate([
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: "$totalAmount" },
+          count: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    const revenue = orderStats[0]?.totalRevenue || 0;
+    const totalOrders = orderStats[0]?.count || 0;
+
+    // 2. Count Total Users 
+    const totalUsers = await db.collection("users").countDocuments({});
+
+    // 3. Count Active Marketplace Listings
+    const activeListings = await db.collection("products").countDocuments({ 
+      approvalStatus: "approved" 
+    });
+
+    // 4. Calculate Inventory Distribution across Categories
+    const categoryDistribution = await db.collection("products").aggregate([
+      { $match: { approvalStatus: "approved" } },
+      { $group: { _id: "$category", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 5 }
+    ]).toArray();
+
+    // 5. Fetch recent orders log stream
+    const recentActivities = await db.collection("orders")
+      .find({})
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        revenue,
+        totalOrders,
+        totalUsers,
+        activeListings,
+        categoryDistribution,
+        recentActivities
+      }
+    });
+  } catch (error) {
+    console.error("Failed to compile admin analytics summary:", error);
+    res.status(500).json({ success: false, message: "Server error calculating stats" });
+  }
+});
+
+
+
+
+
+
 
 
 // Start server
