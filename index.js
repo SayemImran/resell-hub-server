@@ -11,7 +11,7 @@ const { verifyJWT, requireRole } = require("./middlewere/auth.js");
 // Middleware
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: ["http://localhost:3000","https://resell-hub-bd.vercel.app"],
     credentials: true,
   }),
 );
